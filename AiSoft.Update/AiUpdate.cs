@@ -1,9 +1,11 @@
 ﻿using System;
 using System.IO;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using AiSoft.Tools.Extensions;
 using AiSoft.Tools.Files;
+using AiSoft.Tools.Helpers;
 using AiSoft.Update.Enums;
 using AiSoft.Update.Models;
 
@@ -15,10 +17,9 @@ namespace AiSoft.Update
     public class AiUpdate
     {
         /// <summary>
-        /// <para>是否静默升级</para>
-        /// <para>如果否，则需要手动调用继续步骤</para>
+        /// 是否只是比较版本(默认:否)
         /// </summary>
-        public bool IsSilent { get; set; }
+        public bool IsOnlyCompare { get; set; }
 
         /// <summary>
         /// 当前版本
@@ -36,19 +37,14 @@ namespace AiSoft.Update
         public string DownFileSavePath { get; set; }
 
         /// <summary>
-        /// 是否解压(默认:否)
+        /// 下载文件需要复制路径(默认:本地目录。为空不复制)
         /// </summary>
-        public bool IsExtract { get; set; }
+        public string DownFileCopyToPath { get; set; }
 
-        /// <summary>
-        /// 下载文件解压路径(默认:本地目录)
-        /// </summary>
-        public string DownFileExtractPath { get; set; }
-
-        /// <summary>
-        /// 是否删除下载文件(默认:否)
-        /// </summary>
-        public bool IsDeleteDownFile { get; set; }
+        ///// <summary>
+        ///// 是否删除下载文件(默认:否)
+        ///// </summary>
+        //public bool IsDeleteDownFile { get; set; }
 
         /// <summary>
         /// 当前步骤(每个步骤开始前提示)
@@ -78,8 +74,11 @@ namespace AiSoft.Update
         /// <summary>
         /// 解压完成
         /// </summary>
-        public event Action OnExtractFiled;
+        public event Action OnExtractCompleted;
 
+        /// <summary>
+        /// 升级配置模型
+        /// </summary>
         private UpdateModel _updateModel;
 
         /// <summary>
@@ -92,11 +91,9 @@ namespace AiSoft.Update
             NowVersion = nowVersion;
             UpdateJsonAddress = updateJsonAddress;
 
-            IsSilent = false;
+            IsOnlyCompare = false;
             DownFileSavePath = $"{AppDomain.CurrentDomain.BaseDirectory}Update";
-            IsExtract = false;
-            DownFileExtractPath = AppDomain.CurrentDomain.BaseDirectory;
-            IsDeleteDownFile = false;
+            DownFileCopyToPath = AppDomain.CurrentDomain.BaseDirectory;
         }
 
         /// <summary>
@@ -105,13 +102,13 @@ namespace AiSoft.Update
         public void Start()
         {
             // 比较版本
-            CompareVersion();
+            CompareToVersion();
         }
 
         /// <summary>
         /// 比较版本
         /// </summary>
-        public void CompareVersion()
+        private void CompareToVersion()
         {
             Task.Run(async () =>
             {
@@ -142,7 +139,7 @@ namespace AiSoft.Update
                 if (newVer.CompareTo(nowVer) > 0)
                 {
                     OnIsNeedUpdate?.Invoke(true, newVer);
-                    if (IsSilent)
+                    if (!IsOnlyCompare)
                     {
                         // 开始下载文件
                         DownFile();
@@ -160,7 +157,7 @@ namespace AiSoft.Update
         /// 下载文件
         /// </summary>
         /// <returns></returns>
-        public void DownFile()
+        private void DownFile()
         {
             Task.Run(() =>
             {
@@ -170,59 +167,82 @@ namespace AiSoft.Update
                     OnStep?.Invoke(UpdateStepEnum.Fail);
                     return;
                 }
-                OnStep?.Invoke(UpdateStepEnum.DownFile);
-                // 升级下载文件地址校验
-                if (string.IsNullOrWhiteSpace(UpdateJsonAddress) || !_updateModel.DownFileAddress.MatchUrl())
+                if (_updateModel.DownFileAddress != null && _updateModel.DownFileAddress.Count > 0)
                 {
-                    OnError?.Invoke($"下载升级文件地址校验失败:{_updateModel.DownFileAddress}");
-                    OnStep?.Invoke(UpdateStepEnum.Fail);
-                    return;
-                }
-                _updateModel.DownFileSavePath = $"{DownFileSavePath}\\{Path.GetFileName(_updateModel.DownFileAddress)}";
-                // 创建目录
-                if (!Directory.Exists(DownFileSavePath))
-                {
-                    Directory.CreateDirectory(DownFileSavePath);
-                }
-                // 验证证书
-                ServicePointManager.ServerCertificateValidationCallback += (o, c, ch, er) => true;
-                // 下载
-                var webClient = new WebClient();
-                webClient.Headers.Add("User-Agent", "Mozilla / 5.0(compatible; MSIE 9.0; Windows NT 6.1; Trident / 5.0)");
-                webClient.DownloadProgressChanged += (sender, e) =>
-                {
-                    OnDownloadProgressChanged?.Invoke(e);
-                };
-                webClient.DownloadFileCompleted += (sender, e) =>
-                {
-                    if (e.Error != null)
+                    OnStep?.Invoke(UpdateStepEnum.DownFile);
+                    // 创建目录
+                    if (!Directory.Exists(DownFileSavePath))
                     {
-                        OnError?.Invoke($"下载升级文件失败:{e.Error.Message} 地址:{_updateModel.DownFileAddress}");
+                        Directory.CreateDirectory(DownFileSavePath);
+                    }
+                    // 验证证书
+                    ServicePointManager.ServerCertificateValidationCallback += (o, c, ch, er) => true;
+                    var failed = 0;
+                    _updateModel.DownFileAddress.ForEach(async url =>
+                    {
+                        await Task.Run(async ()=>
+                        {
+                            // 升级下载文件地址校验
+                            if (string.IsNullOrWhiteSpace(url) || !url.MatchUrl())
+                            {
+                                Interlocked.Increment(ref failed);
+                                OnError?.Invoke($"下载升级文件地址校验失败:{_updateModel.DownFileAddress}");
+                                //OnStep?.Invoke(UpdateStepEnum.Fail);
+                                return;
+                            }
+                            // 下载
+                            var webClient = new WebClient();
+                            webClient.Headers.Add("User-Agent", "Mozilla / 5.0(compatible; MSIE 9.0; Windows NT 6.1; Trident / 5.0)");
+                            webClient.DownloadProgressChanged += (sender, e) =>
+                            {
+                                OnDownloadProgressChanged?.Invoke(e);
+                            };
+                            webClient.DownloadFileCompleted += (sender, e) =>
+                            {
+                                if (e.Error != null)
+                                {
+                                    Interlocked.Increment(ref failed);
+                                    OnError?.Invoke($"下载升级文件失败:{e.Error.Message} 地址:{_updateModel.DownFileAddress}");
+                                    //OnStep?.Invoke(UpdateStepEnum.Fail);
+                                    return;
+                                }
+                            };
+                            var downFilePath = $"{DownFileSavePath}\\{Path.GetFileName(url)}";
+                            // 开始下载
+                            await webClient.DownloadFileTaskAsync(new Uri(url), downFilePath);
+                        });
+                    });
+                    if (failed > 0)
+                    {
+                        OnError?.Invoke($"下载升级文件失败:{failed}个");
                         OnStep?.Invoke(UpdateStepEnum.Fail);
                         return;
                     }
+                    // 下载完成
                     OnDownloadFileCompleted?.Invoke();
-                    if (IsSilent && IsExtract)
+                    if (_updateModel.IsExtract)
                     {
                         // 解压文件
                         ExtractFile();
                     }
                     else
                     {
-                        // 删除文件
-                        DeleteFile();
-                        OnStep?.Invoke(UpdateStepEnum.Complete);
+                        // 复制文件
+                        CopyFile();
                     }
-                };
-                // 开始下载
-                webClient.DownloadFileAsync(new Uri(_updateModel.DownFileAddress), _updateModel.DownFileSavePath);
+                }
+                else
+                {
+                    OnError?.Invoke("下载升级文件列表为空");
+                    OnStep?.Invoke(UpdateStepEnum.Complete);
+                }
             });
         }
 
         /// <summary>
         /// 解压文件
         /// </summary>
-        public void ExtractFile()
+        private void ExtractFile()
         {
             Task.Run(() =>
             {
@@ -233,42 +253,55 @@ namespace AiSoft.Update
                     return;
                 }
                 OnStep?.Invoke(UpdateStepEnum.ExtractFile);
-                if (string.IsNullOrWhiteSpace(_updateModel.DownFileSavePath) || !File.Exists(_updateModel.DownFileSavePath))
+                var failed = 0;
+                _updateModel.DownFileAddress.ForEach(url =>
                 {
-                    OnError?.Invoke($"解压升级文件不存在:{_updateModel.DownFileSavePath}");
+                    var downFilePath = $"{DownFileSavePath}\\{Path.GetFileName(url)}";
+                    if (!File.Exists(downFilePath))
+                    {
+                        Interlocked.Increment(ref failed);
+                        OnError?.Invoke($"解压升级文件不存在:{downFilePath}");
+                        //OnStep?.Invoke(UpdateStepEnum.Fail);
+                        return;
+                    }
+                    try
+                    {
+                        // 解压
+                        var compressor = new SevenZipCompressor(null);
+                        compressor.Decompress(downFilePath, DownFileSavePath);
+                    }
+                    catch (Exception e)
+                    {
+                        Interlocked.Increment(ref failed);
+                        OnError?.Invoke($"解压升级文件失败:{e.Message}");
+                        //OnStep?.Invoke(UpdateStepEnum.Fail);
+                    }
+                    finally
+                    {
+                        // 删除文件
+                        File.Delete(downFilePath);
+                    }
+                });
+                if (failed > 0)
+                {
+                    OnError?.Invoke($"解压升级文件失败:{failed}个");
                     OnStep?.Invoke(UpdateStepEnum.Fail);
                     return;
                 }
-                try
-                {
-                    // 解压
-                    var compressor = new SevenZipCompressor(null);
-                    compressor.Decompress(_updateModel.DownFileSavePath, DownFileExtractPath);
-                    OnExtractFiled?.Invoke();
-                    OnStep?.Invoke(UpdateStepEnum.Complete);
-                }
-                catch (Exception e)
-                {
-                    OnError?.Invoke($"解压升级文件失败:{e.Message}");
-                    OnStep?.Invoke(UpdateStepEnum.Fail);
-                }
-                finally
-                {
-                    // 删除文件
-                    DeleteFile();
-                }
+                OnExtractCompleted?.Invoke();
+                // 复制文件
+                CopyFile();
             });
         }
 
         /// <summary>
-        /// 删除文件
+        /// 复制文件
         /// </summary>
-        private void DeleteFile()
+        private void CopyFile()
         {
-            if (IsDeleteDownFile && !string.IsNullOrWhiteSpace(_updateModel.DownFileSavePath) && File.Exists(_updateModel.DownFileSavePath))
-            {
-                File.Delete(_updateModel.DownFileSavePath);
-            }
+            // 复制目录
+            FileHelper.CopyDirectory(DownFileSavePath, DownFileCopyToPath, true);
+            OnStep?.Invoke(UpdateStepEnum.Complete);
         }
     }
 }
