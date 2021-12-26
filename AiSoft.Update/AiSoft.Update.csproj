@@ -3,14 +3,14 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <Company>AiSoft</Company>
-    <Version>1.0.1.0</Version>
+    <Version>1.0.1.2</Version>
     <Copyright>Copyright © AiSoft 2021</Copyright>
     <Product>AiStock</Product>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AiSoft.Tools" Version="1.0.3" />
+    <PackageReference Include="AiSoft.Tools" Version="1.0.3.2" />
   </ItemGroup>
 
 </Project>
