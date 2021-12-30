@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AiSoft.Tools" Version="1.0.3.2" />
+    <PackageReference Include="AiSoft.Tools" Version="1.0.3.4" />
   </ItemGroup>
 
 </Project>
